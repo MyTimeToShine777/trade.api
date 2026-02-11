@@ -6,7 +6,7 @@ const technicalService = require('./technicalService');
 class AIService {
   constructor() {
     this.client = null;
-    this.model = 'gemini-3-pro-preview';
+    this.model = 'gemini-2.5-pro';
   }
 
   _stripCodeFences(text) {

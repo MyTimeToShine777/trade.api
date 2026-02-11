@@ -6,7 +6,7 @@
 const { GoogleGenAI } = require('@google/genai');
 const db = require('../config/database');
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gemini-2.5-pro';
 
 function getClient() {
   const key = process.env.GEMINI_API_KEY;
