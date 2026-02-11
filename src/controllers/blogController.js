@@ -146,7 +146,17 @@ exports.getStats = async (req, res) => {
 
     const recentLogs = await db.prepare("SELECT * FROM blog_generation_log ORDER BY created_at DESC LIMIT 20").all();
 
-    res.json({ totalPosts, publishedPosts, draftPosts, totalViews, niches, recentLogs });
+    // Market breakdown
+    const marketBreakdown = await db.prepare(`
+      SELECT market, COUNT(*) as count, COALESCE(SUM(views),0) as views
+      FROM blog_posts WHERE status='published' GROUP BY market
+    `).all();
+
+    // Estimated revenue (rough: views * avg_cpc / 1000 * 0.02 CTR)
+    const avgCpc = niches.length > 0 ? niches.reduce((s, n) => s + (n.avg_cpc || 0), 0) / niches.length : 3;
+    const estimatedRevenue = ((totalViews * avgCpc / 1000) * 0.02).toFixed(2);
+
+    res.json({ totalPosts, publishedPosts, draftPosts, totalViews, nicheBreakdown: niches, marketBreakdown, estimatedRevenue, recentLogs });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch stats' });
   }
@@ -160,5 +170,99 @@ exports.getAllSlugs = async (req, res) => {
     res.json({ slugs: posts.map(p => p.slug) });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch slugs' });
+  }
+};
+
+// ─── ADMIN ENDPOINTS ───
+
+// POST /api/blog/admin/generate — generate a single AI post
+exports.adminGenerate = async (req, res) => {
+  try {
+    const blogService = require('../services/blogGeneratorService');
+    const nicheId = req.body?.niche || null;
+    const result = await blogService.generatePost(nicheId);
+    res.json({ success: true, post: result });
+  } catch (err) {
+    console.error('[Blog Admin] Generate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// POST /api/blog/admin/generate-batch — generate multiple AI posts
+exports.adminBatchGenerate = async (req, res) => {
+  try {
+    const blogService = require('../services/blogGeneratorService');
+    const count = parseInt(req.body?.count || '3');
+    const results = await blogService.batchGenerate(Math.min(count, 10));
+    res.json({ success: true, posts: results, count: results.length });
+  } catch (err) {
+    console.error('[Blog Admin] Batch generate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// POST /api/blog/admin/posts — create a manual post
+exports.adminCreatePost = async (req, res) => {
+  try {
+    await db._ready;
+    const { slug, title, excerpt, content, niche_id, tags, image_url, image_alt, status, market } = req.body;
+    if (!title || !content) return res.status(400).json({ error: 'title and content are required' });
+
+    const finalSlug = (slug || title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 120)) + '';
+    const wordCount = (content || '').split(/\s+/).length;
+    const readingTime = Math.max(3, Math.ceil(wordCount / 250));
+
+    await db.prepare(`
+      INSERT INTO blog_posts (slug, title, excerpt, content, niche_id, tags, image_url, image_alt, reading_time, meta_title, meta_description, market, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(finalSlug, title, excerpt || '', content, niche_id || 'trending', tags || '', image_url || '', image_alt || title, readingTime, title, excerpt || title, market || 'global', status || 'published');
+
+    res.json({ success: true, slug: finalSlug });
+  } catch (err) {
+    console.error('[Blog Admin] Create error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// PUT /api/blog/admin/posts/:id — update a post
+exports.adminUpdatePost = async (req, res) => {
+  try {
+    await db._ready;
+    const { id } = req.params;
+    const { title, excerpt, content, niche_id, tags, image_url, image_alt, status, market } = req.body;
+
+    await db.prepare(`
+      UPDATE blog_posts SET title=COALESCE(?,title), excerpt=COALESCE(?,excerpt), content=COALESCE(?,content), niche_id=COALESCE(?,niche_id),
+      tags=COALESCE(?,tags), image_url=COALESCE(?,image_url), image_alt=COALESCE(?,image_alt), status=COALESCE(?,status), market=COALESCE(?,market),
+      updated_at=NOW() WHERE id=?
+    `).run(title||null, excerpt||null, content||null, niche_id||null, tags||null, image_url||null, image_alt||null, status||null, market||null, id);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Blog Admin] Update error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// DELETE /api/blog/admin/posts/:id — delete a post
+exports.adminDeletePost = async (req, res) => {
+  try {
+    await db._ready;
+    await db.prepare('DELETE FROM blog_posts WHERE id=?').run(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// GET /api/blog/admin/posts/:id — get single post by ID (for editing)
+exports.adminGetPost = async (req, res) => {
+  try {
+    await db._ready;
+    const post = await db.prepare('SELECT * FROM blog_posts WHERE id=?').get(req.params.id);
+    if (!post) return res.status(404).json({ error: 'Not found' });
+    res.json({ post });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };
